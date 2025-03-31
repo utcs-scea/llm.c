@@ -402,6 +402,7 @@ class LLaMA(nn.Module):
         """Loads pretrained LLaMA model weights from HuggingFace"""
         from transformers import AutoModelForCausalLM, AutoTokenizer
         assert model_id == "meta-llama/Meta-Llama-3.1-8B", "Only the 8B-base model is supported for now"
+        #assert model_id == "meta-llama/Meta-Llama-3.2-1B", "Only the 8B-base model is supported for now"
         model_args = LlamaConfig()
 
         model = AutoModelForCausalLM.from_pretrained(model_id)
@@ -942,8 +943,8 @@ def write_state(model, x, y, logits, loss, filename):
     # this can be used for checking the computation correctness in C
     header = torch.zeros(256, dtype=torch.int32)
     header[0] = 20240803 # magic
-    header[1] = x.size(0) # batch size of the batch, B
-    header[2] = x.size(1) # temporal extent of the batch, T
+    header[2] = x.size(0) # batch size of the batch, B
+    header[3] = x.size(1) # temporal extent of the batch, T
     grads = {name: param.grad.cpu() for name, param in model.named_parameters()}
     with open(filename, "wb") as file:
         # header
@@ -984,9 +985,15 @@ if __name__ == "__main__":
     parser.add_argument("--output_dir", type=str, default="", help="output directory to which to write logs and checkpoints")
     parser.add_argument("--model", type=str, default="meta-llama/Meta-Llama-3.1-8B", help="chose the llama model")
     # token layout for each step of the optimization
-    parser.add_argument("--batch_size", type=int, default=4, help="batch size, in units of #batch dimensions")
-    parser.add_argument("--sequence_length", type=int, default=64, help="sequence length")
-    parser.add_argument("--total_batch_size", type=int, default=256, help="total desired batch size, in units of #tokens")
+    # (taeklim): Changed for existing GPT2 model
+    #parser.add_argument("--batch_size", type=int, default=4, help="batch size, in units of #batch dimensions")
+    #parser.add_argument("--batch_size", type=int, default=16, help="batch size, in units of #batch dimensions")
+    parser.add_argument("--batch_size", type=int, default=1, help="batch size, in units of #batch dimensions")
+    #parser.add_argument("--sequence_length", type=int, default=64, help="sequence length")
+    parser.add_argument("--sequence_length", type=int, default=32, help="sequence length")
+    #parser.add_argument("--total_batch_size", type=int, default=256, help="total desired batch size, in units of #tokens")
+    #parser.add_argument("--total_batch_size", type=int, default=2048, help="total desired batch size, in units of #tokens")
+    parser.add_argument("--total_batch_size", type=int, default=32, help="total desired batch size, in units of #tokens")
     # workload (number of steps)
     parser.add_argument("--num_iterations", type=int, default=10, help="number of iterations to run")
     parser.add_argument("--inference_only", type=int, default=0, help="only run inference")
@@ -1010,7 +1017,7 @@ if __name__ == "__main__":
     parser.add_argument("--dtype", type=str, default="bfloat16", help="float32|float16|bfloat16")
     parser.add_argument("--zero_stage", type=int, default=0, help="zero redundancy optimizer stage (0/1/2/3)")
     # python -> C bridge
-    parser.add_argument("--write_tensors", type=int, default=0, help="write tensors to disk")
+    parser.add_argument("--write_tensors", type=int, default=1, help="write tensors to disk")
     args = parser.parse_args()
 
     # args error checking and convenience variables

@@ -1,3 +1,9 @@
+*.swp
+*.files
+*.out
+*.ckpt
+tags
+
 # dot files and such
 .vscode
 .venv

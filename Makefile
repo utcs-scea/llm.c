@@ -16,8 +16,8 @@ FORCE_NVCC_O ?= 3
 
 # NVCC flags
 # -t=0 is short for --threads, 0 = number of CPUs on the machine
-NVCC_FLAGS = --threads=0 -t=0 --use_fast_math -std=c++17 -O$(FORCE_NVCC_O)
-NVCC_LDFLAGS = -lcublas -lcublasLt
+NVCC_FLAGS = --threads=0 -t=0 --use_fast_math -std=c++17 -O$(FORCE_NVCC_O) --generate-code arch=compute_80,code=[compute_80,sm_80]
+NVCC_LDFLAGS = -lcublas -lcublasLt -lcudart
 NVCC_INCLUDES =
 NVCC_LDLIBS =
 NCLL_INCUDES =
@@ -230,7 +230,8 @@ else
 endif
 
 # Precision settings, default to bf16 but ability to override
-PRECISION ?= BF16
+#PRECISION ?= BF16
+PRECISION ?= FP32
 VALID_PRECISIONS := FP32 FP16 BF16
 ifeq ($(filter $(PRECISION),$(VALID_PRECISIONS)),)
   $(error Invalid precision $(PRECISION), valid precisions are $(VALID_PRECISIONS))
@@ -249,17 +250,17 @@ ifeq ($(OPTIMIZER_LOW_PRECISION), 1)
 endif
 
 # PHONY means these targets will always be executed
-.PHONY: all train_llama3cu train_gpt2 test_gpt2 train_gpt2cu test_gpt2cu train_gpt2fp32cu test_gpt2fp32cu profile_gpt2cu
+.PHONY: all train_llama3cu test_llama3cu train_gpt2 test_gpt2 train_gpt2cu test_gpt2cu train_gpt2fp32cu test_gpt2fp32cu profile_gpt2cu
 
 # Add targets
-TARGETS = train_gpt2 test_gpt2
+TARGETS = train_gpt2 test_gpt2 
 
 # Conditional inclusion of CUDA targets
 ifeq ($(NVCC),)
     $(info ✗ nvcc not found, skipping GPU/CUDA builds)
 else
     $(info ✓ nvcc found, including GPU/CUDA support)
-    TARGETS += train_gpt2cu test_gpt2cu train_gpt2fp32cu test_gpt2fp32cu $(NVCC_CUDNN)
+    TARGETS += train_gpt2cu test_gpt2cu train_gpt2fp32cu test_gpt2fp32cu train_llama3cu test_llama3cu $(NVCC_CUDNN)
 endif
 
 $(info ---------------------------------------------)
@@ -291,6 +292,9 @@ profile_gpt2cu: profile_gpt2.cu $(NVCC_CUDNN)
 	$(NVCC) $(NVCC_FLAGS) $(PFLAGS) -lineinfo $^ $(NVCC_LDFLAGS) $(NVCC_INCLUDES) $(NVCC_LDLIBS)  $(CUDA_OUTPUT_FILE)
 
 train_llama3cu: train_llama3.cu $(NVCC_CUDNN)
+	$(NVCC) $(NVCC_FLAGS) $(PFLAGS) $^ $(NVCC_LDFLAGS) $(NVCC_INCLUDES) $(NVCC_LDLIBS) $(CUDA_OUTPUT_FILE)
+
+test_llama3cu: test_llama3.cu $(NVCC_CUDNN)
 	$(NVCC) $(NVCC_FLAGS) $(PFLAGS) $^ $(NVCC_LDFLAGS) $(NVCC_INCLUDES) $(NVCC_LDLIBS) $(CUDA_OUTPUT_FILE)
 
 clean:
