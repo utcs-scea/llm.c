@@ -215,6 +215,7 @@ int main(int argc, char *argv[]) {
     printf("OK (LOGITS)\n");
     printf("logit max diff: %f\n", max_diff);
 
+    // (taeklim): Early exit for a single forward pass
     exit(0);
 
     // let's do 10 training iterations, following the pytorch code

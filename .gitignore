@@ -20,6 +20,8 @@ dev/data/tinyshakespeare/
 dev/data/tinystories/
 
 # binaries
+test_llama3cu
+train_llama3cu
 test_gpt2
 test_gpt2cu
 test_gpt2fp32cu

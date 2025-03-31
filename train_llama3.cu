@@ -536,7 +536,6 @@ void llama3_build_from_checkpoint(GPT2 *model, const char* checkpoint_path, bool
     float header_float[256]; // float section of the header
     freadCheck(header_float, sizeof(float), 256, model_file);
     assert(sizeof(float) == 4); // i think the python export code currently assumes this is float32
-    printf("%d\n", header_int[0]);
     if (header_int[0] != 20240803) { printf("Bad magic model file\n"); exit(EXIT_FAILURE); }
     int version = header_int[1];
     if (!(version == 3 || version == 5)) {
@@ -568,8 +567,9 @@ void llama3_build_from_checkpoint(GPT2 *model, const char* checkpoint_path, bool
     model->config.vocab_size = header_int[3];
     model->config.padded_vocab_size = model->config.vocab_size; // in Llama 3 there is no need for padding
     // (taeklim): Modified number of layers to fit memory size
-    //model->config.num_layers = header_int[4];
-    model->config.num_layers = 6;
+    //printf("num_layers:%d\n", header_int[4]);
+    model->config.num_layers = header_int[4];
+    //model->config.num_layers = 6;
     model->config.num_heads = header_int[5];
     model->config.num_kv_heads = header_int[6];
     model->config.channels = header_int[7];
