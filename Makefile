@@ -230,8 +230,8 @@ else
 endif
 
 # Precision settings, default to bf16 but ability to override
-PRECISION ?= BF16
-#PRECISION ?= FP32
+#PRECISION ?= BF16
+PRECISION ?= FP32
 VALID_PRECISIONS := FP32 FP16 BF16
 ifeq ($(filter $(PRECISION),$(VALID_PRECISIONS)),)
   $(error Invalid precision $(PRECISION), valid precisions are $(VALID_PRECISIONS))
@@ -243,6 +243,9 @@ else ifeq ($(PRECISION), FP16)
 else
   PFLAGS = -DENABLE_BF16
 endif
+
+# Enable gpgpusim
+PFLAGS += -DENABLE_SIM
 
 # Optimizer precision settings, enable to allow BF16 for AdamW m/v state (also affects state file)
 ifeq ($(OPTIMIZER_LOW_PRECISION), 1)

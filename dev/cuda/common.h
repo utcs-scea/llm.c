@@ -183,8 +183,12 @@ __device__ void store128cg(ElementType* target, Packed128<ElementType> value) {
 
 #if defined(ENABLE_BF16)
 
-typedef __nv_bfloat16 floatX;
-typedef __nv_bfloat16 floatN;
+// (taeklim): _nv_bfloat16 is not supported on lower CUDA version
+typedef float floatX;
+typedef float floatN;
+
+//typedef __nv_bfloat16 floatX;
+//typedef __nv_bfloat16 floatN;
 
 #define CUBLAS_LOWP CUDA_R_16BF // CUDA_R_16F or CUDA_R_16BF (or CUDA_R_32F)
 // CUBLAS_COMPUTE_32F or CUBLAS_COMPUTE_16F (for CUDA_R_16F only, potentially slower?!)

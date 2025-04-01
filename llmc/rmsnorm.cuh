@@ -9,6 +9,164 @@ RMSNorm backward CUDA kernel.
 // ----------------------------------------------------------------------------
 // CUDA kernels
 
+// (taeklim)
+__global__ void sim_rmsnorm_forward_kernel6(floatX* __restrict__ out, float* __restrict__ rms,
+                                    const floatX*  __restrict__ inp, const floatX*  __restrict__ weight, int N, int C) {
+    // this kernel is a simplified version of layernorm_forward_kernel6
+    assert(blockDim.x == WARP_SIZE);
+
+    // load weights into shared memory
+    // do this before we allow any threads to exit!
+    extern __shared__ char* params[];
+    // load128/store128 sometimes generated multiple instructions when the types here were floatX*, so
+    // let's keep everything as x128
+//    x128* s_weight = reinterpret_cast<x128*>(params);
+//    x128* s_in = reinterpret_cast<x128*>(params) + ((1 + threadIdx.y) * C / x128::size);
+
+//    int sidx = (threadIdx.x + WARP_SIZE * threadIdx.y) * x128::size;
+//    for(int i = sidx; i < C; i += blockDim.y * WARP_SIZE * x128::size) {
+//        s_weight[i/x128::size] = load128(weight + i);
+//    }
+//    __syncthreads();
+
+    floatX* s_weight = reinterpret_cast<floatX*>(params);
+    floatX* s_in = reinterpret_cast<floatX*>(params) + ((1 + threadIdx.y) * C);
+
+    int sidx = threadIdx.x + WARP_SIZE * threadIdx.y;
+    for(int i = sidx; i < C; i += blockDim.y * WARP_SIZE) {
+        s_weight[i] = weight[i];
+    }
+    __syncthreads();
+
+    int idx = blockIdx.x * blockDim.y + threadIdx.y;
+    if(idx >= N) { return; } // guard
+
+    // adjust pointers to current token
+    inp += idx * C;
+    out += idx * C;
+
+    const float eps = 1e-5f;
+    float acc = 0.f;
+
+//    for(int c = threadIdx.x * x128::size; c < C; c += WARP_SIZE * x128::size) {
+//        const x128 in_data = load128cs(inp + c);
+//        s_in[c / x128::size] = in_data;
+//        for(int k = 0; k < x128::size; ++k) {
+//            float data_k = (float)in_data[k];
+//            acc += data_k * data_k;
+//        }
+//    }
+
+    for(int c = threadIdx.x; c < C; c += WARP_SIZE) {
+        //const floatX in_data = inp[c];
+        s_in[c] = inp[c];
+        acc += (float)inp[c] * (float)inp[c]; 
+    }
+
+    acc = warpReduceSum(acc) / C;
+    float s = rsqrtf(acc + eps);
+
+//    for(int c = threadIdx.x * x128::size; c < C; c += WARP_SIZE * x128::size) {
+//        const x128 in_data = s_in[c / x128::size];
+//        const x128 w = s_weight[c / x128::size];
+//        x128 out_data;
+//        for(int k = 0; k < x128::size; ++k) {
+//            float n = s * (float)in_data[k]; // normalized output
+//            float o = n * (float)w[k]; // scale
+//            out_data[k] = (floatX)o;
+//        }
+//
+//        store128cs(out + c, out_data);
+//    }
+
+    for(int c = threadIdx.x; c < C; c += WARP_SIZE) {
+        out[c] = s * (float)s_in[c] * (float)s_weight[c];
+    }
+
+    // store the rms, no need to cache it
+    if(threadIdx.x == 0 && rms != nullptr) {
+        __stcs(rms + idx, s);
+        //rms[idx] = s;
+    }
+}
+
+// (taeklim) Support for not using smem
+__global__ void sim_rmsnorm_forward_kernel3(floatX* __restrict__ out, float* __restrict__ rms,
+                                    const floatX*  __restrict__ inp, const floatX*  __restrict__ weight, int N, int C) {
+    int lane_id = threadIdx.x % WARP_SIZE;
+    int warp_id = threadIdx.x / WARP_SIZE;
+    int num_warps = blockDim.x / WARP_SIZE;
+
+    int idx = blockIdx.x * num_warps + warp_id;
+    if(idx >= N) { return; } // guard
+
+    // the row of input that this group of threads is responsible for
+    const floatX* x = inp + idx * C;
+
+    const float eps = 1e-5f;
+    float acc = 0.f;
+    for (int i = lane_id; i < C; i += WARP_SIZE) {
+        acc += (float)x[i] * (float)x[i];
+    }
+
+    // (taeklim): Substitute to warpReduceSum
+    extern __shared__ float shared_sum[][WARP_SIZE];
+    float temp_sum = 0.0f;
+    shared_sum[warp_id][lane_id] = acc;
+    for (int i = 0; i < WARP_SIZE; i++) {
+        temp_sum += shared_sum[warp_id][i];
+    }
+    __syncthreads();
+    acc = temp_sum / C;
+    //acc = warpReduceSum(acc) / C;
+    float s = rsqrtf(acc + eps);
+
+    floatX* o = out + idx * C;
+    for (int c = lane_id; c < C; c += WARP_SIZE) {
+        float n = s * (float)x[c];
+        o[c] = n * (float)weight[c];
+    }
+
+    // store the rms, no need to cache it
+    if(lane_id == 0 && rms != nullptr) {
+        rms[idx] = s;
+    }
+}
+
+// (taeklim) Support for not using smem
+__global__ void rmsnorm_forward_kernel3(floatX* __restrict__ out, float* __restrict__ rms,
+                                    const floatX*  __restrict__ inp, const floatX*  __restrict__ weight, int N, int C) {
+    int lane_id = threadIdx.x % WARP_SIZE;
+    int warp_id = threadIdx.x / WARP_SIZE;
+    int num_warps = blockDim.x / WARP_SIZE;
+
+    int idx = blockIdx.x * num_warps + warp_id;
+    if(idx >= N) { return; } // guard
+
+    // the row of input that this group of threads is responsible for
+    const floatX* x = inp + idx * C;
+
+    const float eps = 1e-5f;
+    float acc = 0.f;
+    for (int i = lane_id; i < C; i += WARP_SIZE) {
+        acc += (float)x[i] * (float)x[i];
+    }
+
+    acc = warpReduceSum(acc) / C;
+    float s = rsqrtf(acc + eps);
+
+    floatX* o = out + idx * C;
+    for (int c = lane_id; c < C; c += WARP_SIZE) {
+        float n = s * (float)x[c];
+        o[c] = n * (float)weight[c];
+    }
+
+    // store the rms, no need to cache it
+    if(lane_id == 0 && rms != nullptr) {
+        __stcs(rms + idx, s);
+    }
+}
+
 __global__ void rmsnorm_forward_kernel6(floatX* __restrict__ out, float* __restrict__ rms,
                                     const floatX*  __restrict__ inp, const floatX*  __restrict__ weight, int N, int C) {
     // this kernel is a simplified version of layernorm_forward_kernel6
@@ -328,6 +486,23 @@ void rmsnorm_forward(floatX* out, float* rms,
 
     // in order to use more than 48 KiB of smem, need to call cudaFuncSetAttribute
     // this may fail, in which case we fall back to the smem free implementation.
+#if defined(ENABLE_SIM)
+    cudaCheck(cudaGetLastError());
+//    auto status = cudaFuncSetAttribute(sim_rmsnorm_forward_kernel6, cudaFuncAttributeMaxDynamicSharedMemorySize, smem);
+//    cudaCheck(cudaGetLastError());
+//    if (status == cudaSuccess) {
+//        printf("Success\n");
+//        sim_rmsnorm_forward_kernel6<<<grid_size, dim3(WARP_SIZE, block_y), smem, stream>>>(out, rms, inp, weight, N, C);
+//    } else {
+//        printf("error on sim_rmsnorm\n");
+//        exit(0);
+//    }
+    const int grid_size_fb = CEIL_DIV(N * WARP_SIZE, block_size);
+    printf("before rmsnor_forward_kernel3\n");
+    //rmsnorm_forward_kernel3<<<grid_size_fb, block_size, 0, stream>>>(out, rms, inp, weight, N, C);
+    sim_rmsnorm_forward_kernel3<<<grid_size_fb, block_size, 0, stream>>>(out, rms, inp, weight, N, C);
+    cudaCheck(cudaGetLastError());
+#else
     cudaCheck(cudaGetLastError());
     auto status = cudaFuncSetAttribute(rmsnorm_forward_kernel6, cudaFuncAttributeMaxDynamicSharedMemorySize, smem);
     cudaCheck(cudaGetLastError());
@@ -338,6 +513,7 @@ void rmsnorm_forward(floatX* out, float* rms,
         assert(false);
     }
     cudaCheck(cudaGetLastError());
+#endif
 }
 
 void fused_residual_rmsnorm_forward5(floatX* residual, floatX* normed, float* rrms,

@@ -657,7 +657,6 @@ void gpt2_forward(GPT2 *model, const int* inputs, size_t B, size_t T) {
     }
 
     // copy inputs/targets to the model
-    printf("inputs:%d B:%ld T:%ld\n", inputs[0], B, T);
     cudaCheck(cudaMemcpy(model->inputs, inputs, B * T * sizeof(int), cudaMemcpyHostToDevice));
     // validate inputs, all indices must be in the range [0, V)
     // we can do this while the copies are already underway
@@ -713,6 +712,7 @@ void gpt2_forward(GPT2 *model, const int* inputs, size_t B, size_t T) {
             floatX* l_att = acts.att + l * B * NH * T * T;
             if (T != model->seq_len) { cudaCheck(cudaMemset(l_att, 0, B * NH * T * T * sizeof(floatX))); }
             // 1) projection to QKV vectors (note k,v may be fewer heads than q)
+            printf("before first cublaslt\n");
             matmul_forward_cublaslt(scratch, l_ln1, l_qkvw, l_qkvb, B, T, C, qkv_channels, main_stream);
             // 2) replicate k,v so that all of q,k,v have the same number of heads. done for simplicity, for now
             repkv_forward(qkv_rep_scratch, scratch, B, T, n_head, n_kv_head, hd, main_stream);
@@ -1732,8 +1732,6 @@ int main(int argc, char *argv[]) {
             gpt2_forward(&model, train_loader.inputs, B, T);
             printf0("Done forward\n");
             fflush(stdout);
-            // (taeklim): Skip backward
-            exit(0);
             // backward pass. all model params accumulate gradients with += inside this inner loop
             //gpt2_backward_and_reduce(&model, train_loader.inputs, train_loader.targets, grad_accum_steps, micro_step);
         }

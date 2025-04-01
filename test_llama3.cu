@@ -126,7 +126,11 @@ int main(int argc, char *argv[]) {
     }
 
     // load additional information that we will use for debugging and error checking
+#if defined(ENABLE_BF16)
     FILE *state_file = fopenCheck("llama3_8B_debug_state.bin", "rb");
+#else
+    FILE *state_file = fopenCheck("llama3_8B_float32_debug_state.bin", "rb");
+#endif
     int state_header[256];
     freadCheck(state_header, sizeof(int), 256, state_file);
     if (state_header[0] != 20240803) { fprintf(stderr, "Bad magic state file\n"); exit(EXIT_FAILURE); }

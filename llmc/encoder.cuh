@@ -61,6 +61,27 @@ __global__ void encoder_forward_kernel3_nowpe(floatX* out,
     store128(out_btc, wte128);
 }
 
+// (taeklim)
+__global__ void sim_encoder_forward_kernel3_nowpe(floatX* out,
+                               const int* inp, const floatX* wte,
+                               int B, int T, int C) {
+    int idx = (blockIdx.x * blockDim.x + threadIdx.x);
+    int N = B * T * C;
+    if (idx >= N) { return; }
+    int bt = idx / C;
+    int b = bt / T;
+    int t = bt % T;
+    int c = idx % C;
+    int ix = inp[b * T + t];
+//    floatX* out_btc = out + b * T * C + t * C + c;
+//    const floatX* wte_ix = wte + ix * C + c;
+//    x128 wte128 = load128cs(wte_ix);
+//    store128(out_btc, wte128);
+
+    out[b * T * C + t * C + c] = wte[ix * C + c];
+}
+
+
 template <int BLOCK_SIZE=256>
 __global__ void wte_backward_kernel(floatX* dwte,
                                     const int4* bucket_info, const int* workload_indices, const floatX* dout, const int* inp,
@@ -180,8 +201,15 @@ void encoder_forward(floatX* out,
     const int N = B * T * C;
     const int grid_size = CEIL_DIV(N, (int)(block_size * x128::size));
     if (wpe == NULL) {
+#if defined(ENABLE_SIM)
+        // (taeklim): modified kernel for simulation
+        printf("sim_encoder_forward\n");
+        const int sim_grid_size = CEIL_DIV(N, block_size);
+        sim_encoder_forward_kernel3_nowpe<<<sim_grid_size, block_size, 0, stream>>>(out, inp, wte, B, T, C);
+#else
         // Llama 3 does not use positional encoder
         encoder_forward_kernel3_nowpe<<<grid_size, block_size, 0, stream>>>(out, inp, wte, B, T, C);
+#endif
     } else {
         // GPT-2 does, so we use the full encoder kernel
         encoder_forward_kernel3<<<grid_size, block_size, 0, stream>>>(out, inp, wte, wpe, B, T, C);
