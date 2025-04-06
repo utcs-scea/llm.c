@@ -712,7 +712,6 @@ void gpt2_forward(GPT2 *model, const int* inputs, size_t B, size_t T) {
             floatX* l_att = acts.att + l * B * NH * T * T;
             if (T != model->seq_len) { cudaCheck(cudaMemset(l_att, 0, B * NH * T * T * sizeof(floatX))); }
             // 1) projection to QKV vectors (note k,v may be fewer heads than q)
-            printf("before first cublaslt\n");
             matmul_forward_cublaslt(scratch, l_ln1, l_qkvw, l_qkvb, B, T, C, qkv_channels, main_stream);
             // 2) replicate k,v so that all of q,k,v have the same number of heads. done for simplicity, for now
             repkv_forward(qkv_rep_scratch, scratch, B, T, n_head, n_kv_head, hd, main_stream);
@@ -738,7 +737,9 @@ void gpt2_forward(GPT2 *model, const int* inputs, size_t B, size_t T) {
             fused_residual_rmsnorm_forward5(l_residual3, acts.lnf, acts.lnf_rstd, l_residual2, scratch, params.lnfw, B * T, C, main_stream);
         }
     }
+    printf("Done before laste matmul\n");
 
+    printf("%d %d %d VP:%d\n", B, T, C, Vp);
     matmul_forward_cublaslt(acts.output, acts.lnf, params.wpe, NULL, B, T, C, Vp, main_stream);
     cudaCheck(cudaDeviceSynchronize());
 }

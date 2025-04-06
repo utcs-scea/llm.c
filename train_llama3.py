@@ -990,10 +990,11 @@ if __name__ == "__main__":
     #parser.add_argument("--batch_size", type=int, default=16, help="batch size, in units of #batch dimensions")
     parser.add_argument("--batch_size", type=int, default=1, help="batch size, in units of #batch dimensions")
     #parser.add_argument("--sequence_length", type=int, default=64, help="sequence length")
-    parser.add_argument("--sequence_length", type=int, default=32, help="sequence length")
+    parser.add_argument("--sequence_length", type=int, default=128, help="sequence length")
     #parser.add_argument("--total_batch_size", type=int, default=256, help="total desired batch size, in units of #tokens")
     #parser.add_argument("--total_batch_size", type=int, default=2048, help="total desired batch size, in units of #tokens")
-    parser.add_argument("--total_batch_size", type=int, default=32, help="total desired batch size, in units of #tokens")
+    #parser.add_argument("--total_batch_size", type=int, default=32, help="total desired batch size, in units of #tokens")
+    parser.add_argument("--total_batch_size", type=int, default=128, help="total desired batch size, in units of #tokens")
     # workload (number of steps)
     parser.add_argument("--num_iterations", type=int, default=10, help="number of iterations to run")
     parser.add_argument("--inference_only", type=int, default=0, help="only run inference")
@@ -1132,8 +1133,8 @@ if __name__ == "__main__":
         # save model params, in bfloat16
         model_to_size = {"meta-llama/Meta-Llama-3.1-8B": "8B"}
         model_size_str = model_to_size[args.model] # e.g. "8B"
-        write_model(model, os.path.join(args.output_dir, f"llama3.1_{model_size_str}.bin"), dtype="float32")
-        write_model(model, os.path.join(args.output_dir, f"llama3.1_{model_size_str}_bf16.bin"), dtype="bfloat16")
+#        write_model(model, os.path.join(args.output_dir, f"llama3.1_{model_size_str}.bin"), dtype="float32")
+#        write_model(model, os.path.join(args.output_dir, f"llama3.1_{model_size_str}_bf16.bin"), dtype="bfloat16")
         # save x, y, logits, loss, and parameter gradients, for debugging C
         # always store these in fp32 to have an accurate reference (?)
         write_state(model, x, y, logits, loss, os.path.join(args.output_dir, f"llama3_{model_size_str}_debug_state.bin"))

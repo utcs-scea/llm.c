@@ -154,6 +154,7 @@ void matmul_cublaslt(floatX* d, const floatX* a, const floatX* b, const floatX* 
     cublasCheck(cublasLtMatrixLayoutCreate(&DLayout, CUBLAS_LOWP, m, n, m));
 
     // Strided Batched GEMM (used for non-flash attention, equivalent to cublasGemmStridedBatchedEx)
+    // NOTE(taeklim): currently 0, but attention kernel has B * NH
     if (batch_count) {
         cublasCheck(cublasLtMatrixLayoutSetAttribute(ALayout, CUBLASLT_MATRIX_LAYOUT_BATCH_COUNT, &batch_count, sizeof(batch_count)));
         cublasCheck(cublasLtMatrixLayoutSetAttribute(BLayout, CUBLASLT_MATRIX_LAYOUT_BATCH_COUNT, &batch_count, sizeof(batch_count)));
@@ -227,6 +228,112 @@ void matmul_cublaslt(floatX* d, const floatX* a, const floatX* b, const floatX* 
     cudaCheck(cudaGetLastError());
 }
 
+__device__ float4 ld_vec(const float* address) {
+    return *reinterpret_cast<const float4*>(address);
+}
+
+__device__ void st_vec(float* address, float4 val) {
+    *reinterpret_cast<float4*>(address) = val;
+}
+
+
+// (taeklim)
+__global__ void sim_matmul_forward_kernel4(floatX* out,
+                                       const floatX* inp, const floatX* weight, const floatX* bias,
+                                       int C, int OC) {
+    // out is (B,T,OC). OC is short for "output channels", e.g. OC = 4 * C
+    // inp is (B,T,C), weight is (OC, C), bias is (OC)
+    // each thread handles 8x8 elements; each block 128 by 128 elements.
+    int oc = 8*(blockIdx.y * blockDim.y + threadIdx.y);
+
+    // buffers to cache chunks of the input matrices
+    __shared__ float lhs_s[128][32];
+    __shared__ float rhs_s[128][32];
+
+    // adjust our pointers for the current block
+    inp += 128 * blockIdx.x * C;
+    weight += 128 * blockIdx.y * C;
+    out += 128 * blockIdx.x * OC + 128 * blockIdx.y;
+
+    float vals[8][8] = {};
+    if(bias != NULL) {
+        for (int i = 0; i < 8; i++) {
+            for (int j = 0; j < 8; j += 4) {
+                float4 b = ld_vec(bias + oc + j);
+                vals[i][j+0] = b.x;
+                vals[i][j+1] = b.y;
+                vals[i][j+2] = b.z;
+                vals[i][j+3] = b.w;
+            }
+        }
+    }
+
+    int si_start = 4*(16 * threadIdx.y + threadIdx.x);
+    for (int so = 0; so < C; so += 32) {
+        __syncthreads();
+        int xmod8 = threadIdx.x % 8;
+        int xby8 = threadIdx.x / 8;
+        int xo = 4 * xmod8;
+        for(int y = 2 * threadIdx.y + xby8; y < 128; y += 32) {
+            st_vec(&lhs_s[y][xo], ld_vec(inp + y * C + so + xo));
+            st_vec(&rhs_s[y][xo], ld_vec(weight + y * C + so + xo));
+        }
+        __syncthreads();
+
+        for (int si = si_start; si < si_start + 32; si += 4) {
+            float4 rhs[8];
+            for (int u = 0; u < 8; ++u) {
+                rhs[u] = ld_vec(&rhs_s[u + 8 * threadIdx.y][si % 32]);
+            }
+
+            for (int ii = 0; ii < 8; ++ii) {
+                float4 lhs = ld_vec(&lhs_s[ii + 8 * threadIdx.x][si % 32]);
+                for (int ji = 0; ji < 8; ++ji) {
+                    vals[ii][ji] += lhs.x * rhs[ji].x;
+                    vals[ii][ji] += lhs.y * rhs[ji].y;
+                    vals[ii][ji] += lhs.z * rhs[ji].z;
+                    vals[ii][ji] += lhs.w * rhs[ji].w;
+                }
+            }
+        }
+    }
+
+    for (int i = 0; i < 8; ++i) {
+        for (int j = 0; j < 8; j += 4) {
+            float4 result;
+            result.x = vals[i][j + 0];
+            result.y = vals[i][j + 1];
+            result.z = vals[i][j + 2];
+            result.w = vals[i][j + 3];
+            st_vec(out + (8*threadIdx.x+i) * OC + 8*threadIdx.y + j, result);
+        }
+    }
+}
+
+// (taeklim)
+void sim_matmul_forward(floatX* out,
+                    floatX* inp, floatX* weight, floatX* bias,
+                    int B, int T, int C, int OC, cudaStream_t stream) {
+    int sqrt_block_size = 16;
+    dim3 gridDim(CEIL_DIV(B*T, 8 * sqrt_block_size), CEIL_DIV(OC, 8 * sqrt_block_size));
+    dim3 blockDim(sqrt_block_size, sqrt_block_size);
+    printf("C:%d OC:%d\n", C, OC);
+    sim_matmul_forward_kernel4<<<gridDim, blockDim, 0, stream>>>(out, inp, weight, bias, C, OC);
+    //matmul_cublaslt(out, weight, inp, bias, OC, B*T, C, stream, true, false, 0, 0, 0, 0, false, pre_gelu, false);
+    cudaCheck(cudaGetLastError());
+}
+
+// (taeklim)
+void sim_matmul_forward2(floatX* out,
+                    floatX* inp, floatX* weight, floatX* bias,
+                    int T, int HS, cudaStream_t stream) {
+    int sqrt_block_size = 16;
+    dim3 gridDim(CEIL_DIV(T, 8 * sqrt_block_size), CEIL_DIV(T, 8 * sqrt_block_size));
+    dim3 blockDim(sqrt_block_size, sqrt_block_size);
+    sim_matmul_forward_kernel4<<<gridDim, blockDim, 0, stream>>>(out, inp, weight, bias, HS, T);
+    cudaCheck(cudaGetLastError());
+}
+
 // small wrapper around matmul_cublaslt for the forward pass (keeping historical order of arguments)
 void matmul_forward_cublaslt(floatX* out,
                      floatX* inp, floatX* weight, floatX* bias,
@@ -237,7 +344,23 @@ void matmul_forward_cublaslt(floatX* out,
         matmul_cublaslt(pre_gelu, weight, inp, bias, OC, B*T, C, stream, true, false, 0, 0, 0, 0, false, NULL, false);
         gelu_forward(out, pre_gelu, B*T*OC, stream);
     } else {
+#if defined(ENABLE_SIM)
+        sim_matmul_forward(out, inp, weight, bias, B, T, C, OC, stream);
+//        int sqrt_block_size = 16;
+//        dim3 gridDim(CEIL_DIV(B*T, 8 * sqrt_block_size), CEIL_DIV(OC, 8 * sqrt_block_size));
+//        dim3 blockDim(sqrt_block_size, sqrt_block_size);
+//        if (bias == NULL) {
+//            //printf("no sim version C:%d OC:%d %d %d\n", C, OC, B, T);
+//            sim_matmul_forward_kernel4<<<gridDim, blockDim, 0, stream>>>(out, inp, weight, bias, C, OC);
+//            //matmul_cublaslt(out, weight, inp, bias, OC, B*T, C, stream, true, false, 0, 0, 0, 0, false, pre_gelu, false);
+//        } else {
+//            //printf("sim version C:%d OC:%d\n", C, OC);
+//            sim_matmul_forward_kernel4<<<gridDim, blockDim, 0, stream>>>(out, inp, weight, bias, C, OC);
+//        }
+//        cudaCheck(cudaGetLastError());
+#else
         matmul_cublaslt(out, weight, inp, bias, OC, B*T, C, stream, true, false, 0, 0, 0, 0, false, pre_gelu, false);
+#endif
     }
 }
 

@@ -10,6 +10,29 @@ Attention, as a fallback when we do not use the Flash Attention from cuDNN
 // ----------------------------------------------------------------------------
 // CUDA kernels
 
+// (taeklim)
+// inputs floatX, outputs FP32 (for current FP32-only activation path for this WIP)
+__global__ void sim_permute_kernel(floatX* q, floatX* k, floatX* v,
+                               const floatX* inp,
+                               int B, int N, int NH, int d) {
+    // okay so now, this kernel wants Q,K,V to all be of shape (B, NH, N, d)
+    // but instead, we have a single tensor QKV (inp) of shape (B, N, 3, NH, d)
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx >= B * NH * N * d) { return; }
+
+    // Q[b][nh_][n][d_] = inp[b][n][0][nh_][d_]
+    int b = idx / (NH * N * d);
+    int rest = idx % (NH * N * d);
+    int nh_ = rest / (N * d);
+    rest = rest % (N * d);
+    int n = rest / d;
+    int d_ = rest % d;
+    int inp_idx = (b * N * 3 * NH * d) + (n * 3 * NH * d) + (0 * NH * d) + (nh_ * d) + d_;
+    q[idx] = inp[inp_idx];
+    k[idx] = inp[inp_idx + NH * d];
+    v[idx] = inp[inp_idx + 2 * (NH * d)];
+}
+
 // inputs floatX, outputs FP32 (for current FP32-only activation path for this WIP)
 __global__ void permute_kernel(floatX* q, floatX* k, floatX* v,
                                const floatX* inp,
@@ -204,6 +227,7 @@ void attention_forward(floatX* out, floatX* qkvr, floatX* att,
     // preatt, att are (B, NH, T, T)
     // output is (B, T, C)
     const int HS = C / NH; // head size
+    printf("NH:%d B:%d HS:%d T:%d CEIL_DIV:%d\n", NH, B, HS, T, CEIL_DIV(T, 128));
 
     // permute and separate inp from (B, T, 3, NH, HS) to 3X (B, NH, T, HS)
     floatX *q, *k, *v;
@@ -212,10 +236,20 @@ void attention_forward(floatX* out, floatX* qkvr, floatX* att,
     v = qkvr + 2 * B * T * C;
     int total_threads = B * NH * T * HS;
     int num_blocks = CEIL_DIV(total_threads, block_size);
+#if defined(ENABLE_SIM)
+    sim_permute_kernel<<<num_blocks, block_size, 0, stream>>>(q, k, v, inp, B, T, NH, HS);
+#else
     permute_kernel<<<num_blocks, block_size, 0, stream>>>(q, k, v, inp, B, T, NH, HS);
+#endif
 
     floatX* preatt = inp; // reuse inp as scratch buffer
+#if defined(ENABLE_SIM)
+    //sim_matmul_forward_kernel4<<<gridDim, blockDim, 0, stream>>>(preatt, q, k, nullptr, HS, T);
+    //sim_matmul_forward2(preatt, q, k, nullptr, T, HS, stream);
     matmul_cublaslt(preatt, k, q, nullptr, T, T, HS, stream, true, false, B * NH, T * HS, T * HS, T * T);
+#else
+    matmul_cublaslt(preatt, k, q, nullptr, T, T, HS, stream, true, false, B * NH, T * HS, T * HS, T * T);
+#endif
 
     // multiply all elements of preatt elementwise by scale
     float scale = 1.f / sqrtf(HS);
@@ -225,7 +259,12 @@ void attention_forward(floatX* out, floatX* qkvr, floatX* att,
     // new approach: first cuBLAS another batched matmul
     floatX* vaccum = inp;
     // y = att @ v # (B, nh, T, T) @ (B, nh, T, hs) -> (B, nh, T, hs)
+#if defined(ENABLE_SIM)
+//    sim_matmul_forward_kernel4<<<gridDim, blockDim, 0, stream>>>(vaccum, att, v, nullptr, T, HS);
     matmul_cublaslt(vaccum, v, att, nullptr, HS, T, T, stream, false, false, B * NH, T * HS, T * T, T * HS);
+#else
+    matmul_cublaslt(vaccum, v, att, nullptr, HS, T, T, stream, false, false, B * NH, T * HS, T * T, T * HS);
+#endif
 
     // now unpermute
     // y = y.transpose(1, 2).contiguous().view(B, T, C) # re-assemble all head outputs side by side
